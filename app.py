@@ -74,7 +74,7 @@ st.caption("Model: ensemble_rf_catboost.joblib | Hedef: target_day (inputta yok)
 # ============================================================
 @st.cache_resource
 def load_model():
-    return joblib.load("model/ensemble_rf_catboost.joblib")
+    return joblib.load("ensemble_rf_catboost.joblib")
 
 model = load_model()
 
