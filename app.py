@@ -1,67 +1,124 @@
 import streamlit as st
 import joblib
 import pandas as pd
+import numpy as np
 from datetime import date as dt_date
 
-st.set_page_config(page_title="Raylı Sistem Tahmin", layout="wide")
+# CatBoost objesi joblib içinde varsa import şart
+# (kullanmasan bile unpickle sırasında lazım olabilir)
+from catboost import CatBoostRegressor, CatBoostClassifier  # noqa: F401
 
-# ------------------------------------------------------------
-# MODEL YÜKLEME
-# ------------------------------------------------------------
+
+# ============================================================
+# 1) JOBLIB İÇİN: Custom Class Tanımı (ŞART)
+# ============================================================
+class RF_CatBoost_Ensemble:
+    """
+    Joblib ile kaydedilen custom ensemble'ı Streamlit'te açabilmek için
+    aynı isimde class tanımı gerekli.
+
+    Bu class, unpickle sonrası __dict__ içine gelen alanları kullanarak
+    tahmin üretir (rf + catboost + alpha + opsiyonel preprocessor).
+    """
+
+    def _get(self, *names, default=None):
+        for n in names:
+            if hasattr(self, n):
+                return getattr(self, n)
+        return default
+
+    def _transform_if_needed(self, X):
+        pre = self._get("preprocessor", "preprocess", "prep", default=None)
+        if pre is None:
+            return X
+
+        X_tr = pre.transform(X)
+        if hasattr(X_tr, "toarray"):
+            X_tr = X_tr.toarray()
+        return X_tr
+
+    def predict(self, X):
+        rf = self._get("rf_model", "rf", "random_forest", "model_rf")
+        cat = self._get("cat_model", "catboost_model", "cat", "model_cat")
+        alpha = self._get("alpha", "weight", "w", default=0.5)
+
+        if rf is None or cat is None:
+            raise ValueError(
+                "Ensemble içinde rf/catboost modelleri bulunamadı. "
+                "Beklenen alanlar: rf_model / cat_model (veya benzerleri)."
+            )
+
+        X_in = self._transform_if_needed(X)
+
+        rf_pred = rf.predict(X_in)
+        cat_pred = cat.predict(X_in)
+
+        # Şekil uyumluluğu (bazı modeller (n,1) döndürebilir)
+        rf_pred = np.asarray(rf_pred).reshape(-1)
+        cat_pred = np.asarray(cat_pred).reshape(-1)
+
+        # Yaygın kullanım: alpha*RF + (1-alpha)*CatBoost
+        y = alpha * rf_pred + (1 - alpha) * cat_pred
+        return y
+
+
+# ============================================================
+# 2) STREAMLIT AYAR
+# ============================================================
+st.set_page_config(page_title="RF + CatBoost Ensemble Tahmin", layout="wide")
+st.title("🚇 RF + CatBoost Ensemble Tahmin")
+st.caption("Model: ensemble_rf_catboost.joblib | Hedef: target_day (inputta yok)")
+
+# ============================================================
+# 3) MODEL YÜKLE
+# ============================================================
 @st.cache_resource
 def load_model():
-    return joblib.load("model/model.joblib")
+    return joblib.load("model/ensemble_rf_catboost.joblib")
 
 model = load_model()
 
-st.title("🚇 Raylı Sistem Yolcu Tahmin Uygulaması")
-st.caption("Not: `target_day` hedef değişken olduğu için input formunda yoktur.")
-
-# ------------------------------------------------------------
-# KATEGORİK LİSTELER (İstersen boş bırak; boşsa text input açar)
-# ------------------------------------------------------------
+# ============================================================
+# 4) KATEGORİK LİSTELER (istersen boş bırak; boşsa text input açar)
+# ============================================================
 STATIONS = [
     # "Yenikapı", "Aksaray", ...
 ]
-
 DISTRICTS = [
     # "Fatih", "Kadıköy", ...
 ]
-
 DISTRICT_NORMS = [
     # "fatih", "kadikoy", ...
 ]
 
 def select_or_text(label: str, options: list[str]) -> str:
-    """Liste doluysa selectbox, boşsa text_input"""
     if options:
         return st.selectbox(label, options)
     return st.text_input(label, value="")
 
-# ------------------------------------------------------------
-# SIDEBAR: KATEGORİK + TARİH
-# ------------------------------------------------------------
+# ============================================================
+# 5) SIDEBAR: KATEGORİK + TARİH
+# ============================================================
 with st.sidebar:
     st.header("🧩 Temel Bilgiler")
-
     station_name = select_or_text("station_name", STATIONS)
 
     d = st.date_input("date", value=dt_date(2024, 12, 1))
-    date_str = d.strftime("%Y-%m-%d")  # sende date object görünüyor; string daha güvenli
+    date_str = d.strftime("%Y-%m-%d")  # sende object görünüyor → string güvenli
 
     district_name = select_or_text("district_name", DISTRICTS)
     district_norm = select_or_text("district_norm", DISTRICT_NORMS)
 
-# ------------------------------------------------------------
-# FORM ALANI
-# ------------------------------------------------------------
+# ============================================================
+# 6) FORM
+# ============================================================
 c1, c2, c3 = st.columns(3)
 
 with c1:
     st.subheader("📅 Takvim Bayrakları (0/1)")
-    Hafta_Sonu = int(st.checkbox("Hafta Sonu", value=False))
-    Tatiller = int(st.checkbox("Tatiller", value=False))
-    Okul_Gunleri = int(st.checkbox("Okul Günleri", value=False))
+    hafta_sonu = int(st.checkbox("Hafta Sonu", value=False))
+    tatiller = int(st.checkbox("Tatiller", value=False))
+    okul_gunleri = int(st.checkbox("Okul Günleri", value=False))
 
     is_weekday = int(st.checkbox("is_weekday", value=True))
     is_weekend = int(st.checkbox("is_weekend", value=False))
@@ -108,45 +165,55 @@ with c3:
     is_extreme_day = int(st.checkbox("is_extreme_day", value=False))
     is_outlier = st.checkbox("is_outlier", value=False)  # bool
 
-# ------------------------------------------------------------
-# MODELE GİDECEK DATAFRAME (target_day YOK!)
-# ------------------------------------------------------------
+# ============================================================
+# 7) MODELE GİDECEK DF (target_day YOK)
+# ============================================================
 X = pd.DataFrame([{
     "station_name": station_name,
     "date": date_str,
-    "Hafta Sonu": Hafta_Sonu,
-    "Tatiller": Tatiller,
-    "Okul Günleri": Okul_Gunleri,
+    "Hafta Sonu": hafta_sonu,
+    "Tatiller": tatiller,
+    "Okul Günleri": okul_gunleri,
     "passage_cnt": float(passage_cnt),
+
     "rain_mm": float(rain_mm),
     "precip_mm": float(precip_mm),
     "snowfall_cm": float(snowfall_cm),
     "et0_mm": float(et0_mm),
+
     "tmax_c": float(tmax_c),
     "tmin_c": float(tmin_c),
     "tmean_c": float(tmean_c),
+
     "tapp_max_c": float(tapp_max_c),
     "tapp_min_c": float(tapp_min_c),
     "tapp_mean_c": float(tapp_mean_c),
+
     "wind10m_mean_kmh": float(wind10m_mean_kmh),
     "cloud_cover_mean_pct": float(cloud_cover_mean_pct),
+
     "sunshine_sec": float(sunshine_sec),
     "sunshine_hour": float(sunshine_hour),
     "snow_depth_cm": float(snow_depth_cm),
+
     "year": int(year),
     "month": int(month),
     "day": int(day),
     "weekday_num": int(weekday_num),
     "weekofyear": int(weekofyear),
     "quarter": int(quarter),
+
     "is_weekday": int(is_weekday),
     "is_weekend": int(is_weekend),
     "is_holiday": int(is_holiday),
     "is_school_day": int(is_school_day),
+
     "is_outlier": bool(is_outlier),
     "is_extreme_day": int(is_extreme_day),
+
     "is_official_holiday": int(is_official_holiday),
     "is_religious_holiday": int(is_religious_holiday),
+
     "district_name": district_name,
     "district_norm": district_norm,
 }])
@@ -161,13 +228,13 @@ with colA:
     if st.button("Tahmin Et", use_container_width=True):
         try:
             y_pred = model.predict(X)
-            st.success(f"✅ Tahmin (target_day): {float(y_pred[0]):.4f}")
+            st.success(f"✅ Tahmin (target_day): {float(np.asarray(y_pred).reshape(-1)[0]):.4f}")
         except Exception as e:
             st.error("❌ Tahmin sırasında hata oluştu.")
             st.exception(e)
 
 with colB:
     st.info(
-        "Eğer kategorik alanlarda (station_name/district_name/district_norm) eğitimde görülmeyen bir değer girilirse "
-        "OneHotEncoder hata verebilir. Bu durumda listeleri eğitimdeki benzersiz değerlerle doldurmak gerekir."
+        "Kategorik alanlarda (station_name/district_name/district_norm) eğitimde görülmeyen değer girersen "
+        "OneHotEncoder hata verebilir. En sağlamı: bu listeleri eğitimdeki unique değerlerle doldurmak."
     )
