@@ -5,6 +5,8 @@ import pandas as pd
 import numpy as np
 from datetime import date as dt_date
 
+import holidays  # pip: holidays
+
 # =========================
 # SAYFA AYARLARI
 # =========================
@@ -42,11 +44,59 @@ cat_pipe = bundle["cat_pipe"]
 
 st.caption(f"Ağırlıklar: **{alpha:.2f} RF** + **{1-alpha:.2f} CatBoost**")
 
-with st.expander("🧠 Debug (bundle anahtarları)", expanded=False):
-    st.write("Bundle keys:", list(bundle.keys()))
-    st.write("RF pipe:", type(rf_pipe))
-    st.write("Cat pipe:", type(cat_pipe))
-    st.write("Alpha:", alpha)
+
+# =========================
+# TAKVİM / TATİL HESAPLARI
+# =========================
+@st.cache_resource
+def tr_holidays():
+    # Türkiye resmi tatilleri
+    return holidays.Turkey()
+
+TR_HOLIDAYS = tr_holidays()
+
+def compute_calendar_features(d: dt_date):
+    # temel
+    weekday_num = d.weekday()  # Mon=0 ... Sun=6
+    is_weekend = int(weekday_num >= 5)
+    is_weekday = int(not is_weekend)
+
+    # yıl/ay/gün
+    year = d.year
+    month = d.month
+    day = d.day
+
+    # weekofyear (ISO hafta numarası)
+    weekofyear = int(d.isocalendar().week)
+
+    # quarter
+    quarter = (month - 1) // 3 + 1
+
+    # TR resmi tatil mi?
+    is_official_holiday = int(d in TR_HOLIDAYS)
+    is_holiday = int(is_official_holiday == 1)  # senin kolon mantığına göre
+
+    # “Tatiller” kolonunu resmi tatile bağlayalım
+    Tatiller = is_official_holiday
+
+    # “Hafta Sonu” kolonunu otomatik dolduralım
+    Hafta_Sonu = is_weekend
+
+    return {
+        "weekday_num": weekday_num,
+        "is_weekend": is_weekend,
+        "is_weekday": is_weekday,
+        "year": year,
+        "month": month,
+        "day": day,
+        "weekofyear": weekofyear,
+        "quarter": quarter,
+        "is_official_holiday": is_official_holiday,
+        "is_holiday": is_holiday,
+        "Tatiller": Tatiller,
+        "Hafta Sonu": Hafta_Sonu,
+    }
+
 
 # =========================
 # INPUTLAR
@@ -63,26 +113,51 @@ def select_or_text(label: str, options: list[str], default=""):
 with st.sidebar:
     st.header("🧩 Temel Bilgiler")
     station_name = select_or_text("station_name", STATIONS)
+
     d = st.date_input("date", value=dt_date(2024, 12, 1))
     date_str = d.strftime("%Y-%m-%d")
+
     district_name = select_or_text("district_name", DISTRICTS)
     district_norm = select_or_text("district_norm", DISTRICT_NORMS)
+
+cal = compute_calendar_features(d)
+
+with st.sidebar:
+    st.markdown("### 📅 Otomatik Takvim Bilgileri")
+    st.write("Weekday num:", cal["weekday_num"])
+    st.write("Week of year:", cal["weekofyear"])
+    st.write("Quarter:", cal["quarter"])
+    st.write("Hafta sonu mu?:", bool(cal["is_weekend"]))
+    st.write("Resmi tatil mi?:", bool(cal["is_official_holiday"]))
+    if cal["is_official_holiday"]:
+        st.write("Tatil adı:", TR_HOLIDAYS.get(d))
 
 c1, c2, c3 = st.columns(3)
 
 with c1:
-    st.subheader("📅 Takvim Bayrakları (0/1)")
-    Hafta_Sonu = int(st.checkbox("Hafta Sonu", value=False))
-    Tatiller = int(st.checkbox("Tatiller", value=False))
-    Okul_Gunleri = int(st.checkbox("Okul Günleri", value=False))
+    st.subheader("📅 Takvim Bayrakları")
+    # otomatik dolduruluyor; kullanıcı isterse override edebilsin diye checkbox koydum
+    override = st.checkbox("Takvim bayraklarını manuel değiştireyim", value=False)
 
-    is_weekday = int(st.checkbox("is_weekday", value=True))
-    is_weekend = int(st.checkbox("is_weekend", value=False))
-    is_holiday = int(st.checkbox("is_holiday", value=False))
-    is_school_day = int(st.checkbox("is_school_day", value=True))
+    if override:
+        Hafta_Sonu = int(st.checkbox("Hafta Sonu", value=bool(cal["Hafta Sonu"])))
+        Tatiller = int(st.checkbox("Tatiller", value=bool(cal["Tatiller"])))
+        is_weekday = int(st.checkbox("is_weekday", value=bool(cal["is_weekday"])))
+        is_weekend = int(st.checkbox("is_weekend", value=bool(cal["is_weekend"])))
+        is_holiday = int(st.checkbox("is_holiday", value=bool(cal["is_holiday"])))
+        is_official_holiday = int(st.checkbox("is_official_holiday", value=bool(cal["is_official_holiday"])))
+    else:
+        Hafta_Sonu = cal["Hafta Sonu"]
+        Tatiller = cal["Tatiller"]
+        is_weekday = cal["is_weekday"]
+        is_weekend = cal["is_weekend"]
+        is_holiday = cal["is_holiday"]
+        is_official_holiday = cal["is_official_holiday"]
 
-    is_official_holiday = int(st.checkbox("is_official_holiday", value=False))
-    is_religious_holiday = int(st.checkbox("is_religious_holiday", value=False))
+    # Okul günleri / dini tatil gibi şeyler otomatik değil -> kullanıcı girsin
+    Okul_Gunleri = int(st.checkbox("Okul Günleri", value=1))
+    is_school_day = int(st.checkbox("is_school_day", value=1))
+    is_religious_holiday = int(st.checkbox("is_religious_holiday", value=0))
 
 with c2:
     st.subheader("🌦️ Hava Durumu")
@@ -107,30 +182,34 @@ with c2:
     sunshine_hours = st.number_input("sunshine_hours", value=0.0, step=0.1)
 
 with c3:
-    st.subheader("🧠 Zaman Özellikleri + Diğerleri")
+    st.subheader("🧠 Diğerleri")
     passage_cnt = st.number_input("passage_cnt", value=0.0, step=1.0)
 
-    year = st.number_input("year", value=d.year, step=1)
-    month = st.number_input("month", value=d.month, step=1, min_value=1, max_value=12)
-    day = st.number_input("day", value=d.day, step=1, min_value=1, max_value=31)
+    # otomatik hesaplanan zaman alanları
+    year = cal["year"]
+    month = cal["month"]
+    day = cal["day"]
+    weekday_num = cal["weekday_num"]
+    weekofyear = cal["weekofyear"]
+    quarter = cal["quarter"]
 
-    weekday_num = st.number_input("weekday_num", value=d.weekday(), step=1, min_value=0, max_value=6)
-    weekofyear = st.number_input("weekofyear", value=int(d.strftime("%U")), step=1, min_value=0, max_value=53)
-    quarter = st.number_input("quarter", value=((d.month - 1) // 3) + 1, step=1, min_value=1, max_value=4)
-
+    # diğer bayraklar
     is_extreme_day = int(st.checkbox("is_extreme_day", value=False))
     is_outlier = st.checkbox("is_outlier", value=False)
 
+    st.caption("Not: year/month/day/weekday_num/weekofyear/quarter otomatik hesaplanır.")
+
+
 # =========================
-# DATAFRAME (MODELE GİDEN X)
+# X OLUŞTUR
 # =========================
 X = pd.DataFrame([{
     "station_name": station_name,
     "date": date_str,
 
-    "Hafta Sonu": Hafta_Sonu,
-    "Tatiller": Tatiller,
-    "Okul Günleri": Okul_Gunleri,
+    "Hafta Sonu": int(Hafta_Sonu),
+    "Tatiller": int(Tatiller),
+    "Okul Günleri": int(Okul_Gunleri),
 
     "passage_cnt": float(passage_cnt),
 
@@ -176,10 +255,6 @@ X = pd.DataFrame([{
     "district_name": district_name,
     "district_norm": district_norm,
 }])
-
-# Güvenlik: eski isimden gelirse otomatik tamamla
-if "sunshine_hours" not in X.columns and "sunshine_hour" in X.columns:
-    X["sunshine_hours"] = X["sunshine_hour"]
 
 st.subheader("🔎 Modele giden veri (kontrol)")
 st.dataframe(X, use_container_width=True)
