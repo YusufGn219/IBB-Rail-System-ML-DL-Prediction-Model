@@ -5,90 +5,53 @@ import pandas as pd
 import numpy as np
 from datetime import date as dt_date
 
-
 # =========================
-# SAYFA AYARLARI
+# AYARLAR
 # =========================
 st.set_page_config(page_title="RF + CatBoost Ensemble Tahmin", layout="wide")
-st.title("🚇 RF + CatBoost Ensemble Tahmin")
+st.title("🚇 RF + CatBoost Ensemble Tahmin (Bundle)")
 
-
-# =========================
-# BUNDLE YÜKLEME
-# =========================
 BUNDLE_PATH = "bundle_rf_catboost.joblib"
 
 @st.cache_resource
-def load_bundle():
-    return joblib.load(BUNDLE_PATH)
+def load_bundle(path: str):
+    return joblib.load(path)
 
-with st.expander("🔧 Debug (dosya kontrol)", expanded=False):
+# =========================
+# DOSYA KONTROL
+# =========================
+with st.expander("🔧 Debug", expanded=False):
     st.write("Working dir:", os.getcwd())
     st.write("Files:", os.listdir("."))
     st.write("Bundle exists:", os.path.exists(BUNDLE_PATH))
     if os.path.exists(BUNDLE_PATH):
-        st.write("Bundle size (MB):", round(os.path.getsize(BUNDLE_PATH) / (1024 * 1024), 2))
+        st.write("Bundle size (MB):", round(os.path.getsize(BUNDLE_PATH)/(1024*1024), 2))
 
 if not os.path.exists(BUNDLE_PATH):
     st.error(
         f"❌ `{BUNDLE_PATH}` bulunamadı.\n\n"
-        "Repo kök dizinine `bundle_rf_catboost.joblib` dosyasını koyduğundan emin ol."
+        "Repo kök dizinine `bundle_rf_catboost.joblib` dosyasını koy ve tekrar deploy et."
     )
     st.stop()
 
-bundle = load_bundle()
+bundle = load_bundle(BUNDLE_PATH)
 
 # bundle içeriği
 alpha = float(bundle.get("alpha", 0.7))
 rf_pipe = bundle["rf_pipe"]
 cat_pipe = bundle["cat_pipe"]
 
-st.caption(f"Ensemble ağırlıkları: **{alpha:.2f} RF** + **{1-alpha:.2f} CatBoost**")
+st.caption(f"Ağırlıklar: **{alpha:.2f} RF** + **{1-alpha:.2f} CatBoost**")
 
-
-# =========================
-# PIPELINE KOLONLARI (varsa) - KONTROL
-# =========================
-def pipeline_expected_columns(pipe):
-    """
-    Eğer pipeline bir ColumnTransformer veya benzeri bir şey kullanıyorsa,
-    beklenen kolonları buradan yakalamaya çalışır.
-    Bulamazsa None döner.
-    """
-    # sklearn pipeline: named_steps olabilir
-    steps = getattr(pipe, "named_steps", None)
-    if not steps:
-        return None
-
-    # en sık: "preprocessor" adında adım olur
-    for k in ["preprocessor", "prep", "ct", "column_transformer"]:
-        if k in steps:
-            pre = steps[k]
-            # ColumnTransformer içindeki feature isimleri bazen saklı olur
-            for attr in ["feature_names_in_", "feature_names_in"]:
-                if hasattr(pre, attr):
-                    return list(getattr(pre, attr))
-            # pipeline'ın en üstü bazen feature_names_in_ tutar
-    for attr in ["feature_names_in_", "feature_names_in"]:
-        if hasattr(pipe, attr):
-            return list(getattr(pipe, attr))
-
-    return None
-
-exp_cols_rf = pipeline_expected_columns(rf_pipe)
-exp_cols_cat = pipeline_expected_columns(cat_pipe)
-
-with st.expander("🧠 Debug (pipeline beklenen kolonlar)", expanded=False):
-    st.write("RF pipe type:", type(rf_pipe))
-    st.write("Cat pipe type:", type(cat_pipe))
-    st.write("RF expected columns:", exp_cols_rf if exp_cols_rf else "Bulunamadı (normal olabilir)")
-    st.write("Cat expected columns:", exp_cols_cat if exp_cols_cat else "Bulunamadı (normal olabilir)")
-
+with st.expander("🧠 Debug (bundle anahtarları)", expanded=False):
+    st.write("Bundle keys:", list(bundle.keys()))
+    st.write("RF pipe:", type(rf_pipe))
+    st.write("Cat pipe:", type(cat_pipe))
+    st.write("Alpha:", alpha)
 
 # =========================
-# INPUTLAR (senin kolonlarına göre)
+# INPUTLAR (kolon listene göre)
 # =========================
-# (Listeleri boş bırakırsan text_input olur)
 STATIONS = []
 DISTRICTS = []
 DISTRICT_NORMS = []
@@ -159,7 +122,6 @@ with c3:
     is_extreme_day = int(st.checkbox("is_extreme_day", value=False))
     is_outlier = st.checkbox("is_outlier", value=False)
 
-# modele giden veri
 X = pd.DataFrame([{
     "station_name": station_name,
     "date": date_str,
@@ -188,6 +150,7 @@ X = pd.DataFrame([{
 
     "sunshine_sec": float(sunshine_sec),
     "sunshine_hour": float(sunshine_hour),
+
     "snow_depth_cm": float(snow_depth_cm),
 
     "year": int(year),
@@ -212,60 +175,24 @@ X = pd.DataFrame([{
     "district_norm": district_norm,
 }])
 
-st.divider()
 st.subheader("🔎 Modele giden veri (kontrol)")
 st.dataframe(X, use_container_width=True)
-
-
-# =========================
-# KOLON UYUMLULUK KONTROLÜ
-# =========================
-def show_column_mismatch(expected_cols, X_cols, title):
-    exp_set = set(expected_cols)
-    x_set = set(X_cols)
-    missing = sorted(list(exp_set - x_set))
-    extra = sorted(list(x_set - exp_set))
-
-    if not missing and not extra:
-        st.success(f"✅ {title}: Kolonlar uyumlu.")
-        return True
-
-    st.warning(f"⚠️ {title}: Kolon uyuşmazlığı var.")
-    if missing:
-        st.write("Eksik kolonlar:", missing)
-    if extra:
-        st.write("Fazla kolonlar:", extra)
-    return False
-
 
 # =========================
 # TAHMİN
 # =========================
 if st.button("Tahmin Et", use_container_width=True):
     try:
-        # Eğer pipeline expected kolonları bulabildiysek uyumluluğu kontrol et
-        if exp_cols_rf:
-            ok_rf = show_column_mismatch(exp_cols_rf, list(X.columns), "RF Pipeline")
-            if not ok_rf:
-                st.stop()
-
-        if exp_cols_cat:
-            ok_cat = show_column_mismatch(exp_cols_cat, list(X.columns), "CatBoost Pipeline")
-            if not ok_cat:
-                st.stop()
-
         y_rf = np.asarray(rf_pipe.predict(X)).reshape(-1)
         y_cat = np.asarray(cat_pipe.predict(X)).reshape(-1)
+        y = alpha * y_rf + (1 - alpha) * y_cat
 
-        y_pred = alpha * y_rf + (1 - alpha) * y_cat
-        y0 = float(y_pred[0])
+        st.success(f"✅ Tahmin (target_day): {float(y[0]):.4f}")
 
-        st.success(f"✅ Tahmin (target_day): {y0:.4f}")
-        st.caption(f"Ensemble: {alpha:.2f}*RF + {1-alpha:.2f}*CatBoost")
-
-        with st.expander("📌 Model çıktı detayları", expanded=False):
-            st.write("RF tahmin:", float(y_rf[0]))
-            st.write("CatBoost tahmin:", float(y_cat[0]))
+        with st.expander("📌 Detay", expanded=False):
+            st.write("RF:", float(y_rf[0]))
+            st.write("CatBoost:", float(y_cat[0]))
+            st.write("Alpha:", alpha)
 
     except Exception as e:
         st.error("❌ Tahmin sırasında hata oluştu.")
