@@ -5,162 +5,104 @@ import pandas as pd
 import numpy as np
 from datetime import date as dt_date
 
-from catboost import CatBoostRegressor, CatBoostClassifier  # noqa: F401
+
+# =========================
+# SAYFA AYARLARI
+# =========================
+st.set_page_config(page_title="RF + CatBoost Ensemble Tahmin", layout="wide")
+st.title("🚇 RF + CatBoost Ensemble Tahmin")
 
 
 # =========================
-# SABİT AĞIRLIK
+# BUNDLE YÜKLEME
 # =========================
-ALPHA = 0.7  # 0.7 RF + 0.3 CatBoost
-
-
-# ============================================================
-# Custom class (unpickle için gerekebilir)
-# ============================================================
-class RF_CatBoost_Ensemble:
-    """
-    Kendi oluşturduğun RF+CatBoost ensemble joblib ile kaydedildiyse,
-    aynı class adı burada olmalı.
-
-    Bu class:
-    - RF ve CatBoost'u attribute isminden bağımsız TYPE ile bulur
-    - preprocessor varsa uygular
-    - sabit ALPHA ile birleştirir: ALPHA*RF + (1-ALPHA)*CAT
-    """
-
-    def _items(self):
-        return list(getattr(self, "__dict__", {}).items())
-
-    def _is_catboost(self, obj) -> bool:
-        if obj is None:
-            return False
-        cls = obj.__class__.__name__.lower()
-        mod = getattr(obj.__class__, "__module__", "").lower()
-        return ("catboost" in cls) or ("catboost" in mod)
-
-    def _is_rf_like(self, obj) -> bool:
-        if obj is None:
-            return False
-        cls = obj.__class__.__name__.lower()
-        mod = getattr(obj.__class__, "__module__", "").lower()
-        if "randomforest" in cls or "extratrees" in cls:
-            return True
-        if "sklearn" in mod and ("ensemble" in mod or "forest" in mod):
-            return hasattr(obj, "predict")
-        return False
-
-    def _pick_preprocessor(self):
-        # En sık kullanılan isimler
-        for k in ["preprocessor", "preprocess", "prep", "column_transformer", "ct"]:
-            if hasattr(self, k):
-                return getattr(self, k)
-        return None
-
-    def _transform(self, X):
-        pre = self._pick_preprocessor()
-        if pre is None:
-            return X
-        Xt = pre.transform(X)
-        if hasattr(Xt, "toarray"):
-            Xt = Xt.toarray()
-        return Xt
-
-    def _find_models(self):
-        rf = None
-        cat = None
-
-        # 1) Direkt alanlarda ara
-        for name, obj in self._items():
-            if cat is None and self._is_catboost(obj):
-                cat = obj
-            if rf is None and self._is_rf_like(obj):
-                rf = obj
-            if rf is not None and cat is not None:
-                return rf, cat
-
-        # 2) List/dict içlerine de bak
-        for name, obj in self._items():
-            if isinstance(obj, dict):
-                for _, v in obj.items():
-                    if cat is None and self._is_catboost(v):
-                        cat = v
-                    if rf is None and self._is_rf_like(v):
-                        rf = v
-                    if rf is not None and cat is not None:
-                        return rf, cat
-            if isinstance(obj, (list, tuple)):
-                for v in obj:
-                    if cat is None and self._is_catboost(v):
-                        cat = v
-                    if rf is None and self._is_rf_like(v):
-                        rf = v
-                    if rf is not None and cat is not None:
-                        return rf, cat
-
-        return rf, cat
-
-    def predict(self, X):
-        rf, cat = self._find_models()
-        if rf is None or cat is None:
-            keys = [k for k, _ in self._items()]
-            raise ValueError(
-                "Ensemble içinde RF/CatBoost bulunamadı. "
-                f"Mevcut anahtarlar: {keys}"
-            )
-
-        Xt = self._transform(X)
-        rf_pred = np.asarray(rf.predict(Xt)).reshape(-1)
-        cat_pred = np.asarray(cat.predict(Xt)).reshape(-1)
-
-        return ALPHA * rf_pred + (1 - ALPHA) * cat_pred
-
-
-# ============================================================
-# Streamlit
-# ============================================================
-st.set_page_config(page_title="RF(0.7) + CatBoost(0.3) Tahmin", layout="wide")
-st.title("🚇 RF(0.7) + CatBoost(0.3) Ensemble Tahmin")
-st.caption("Hedef: target_day (inputta yok)")
-
-MODEL_PATH = "ensemble_rf_catboost.joblib"
+BUNDLE_PATH = "bundle_rf_catboost.joblib"
 
 @st.cache_resource
-def load_model():
-    return joblib.load(MODEL_PATH)
+def load_bundle():
+    return joblib.load(BUNDLE_PATH)
 
-# Debug
-with st.expander("🔧 Debug", expanded=False):
+with st.expander("🔧 Debug (dosya kontrol)", expanded=False):
     st.write("Working dir:", os.getcwd())
     st.write("Files:", os.listdir("."))
-    st.write("Model exists:", os.path.exists(MODEL_PATH))
-    if os.path.exists(MODEL_PATH):
-        st.write("Model size (MB):", round(os.path.getsize(MODEL_PATH)/(1024*1024), 2))
+    st.write("Bundle exists:", os.path.exists(BUNDLE_PATH))
+    if os.path.exists(BUNDLE_PATH):
+        st.write("Bundle size (MB):", round(os.path.getsize(BUNDLE_PATH) / (1024 * 1024), 2))
 
-model = load_model()
+if not os.path.exists(BUNDLE_PATH):
+    st.error(
+        f"❌ `{BUNDLE_PATH}` bulunamadı.\n\n"
+        "Repo kök dizinine `bundle_rf_catboost.joblib` dosyasını koyduğundan emin ol."
+    )
+    st.stop()
 
-with st.expander("🔍 Debug (model anahtarları)", expanded=False):
-    st.write("Model type:", type(model))
-    if hasattr(model, "__dict__"):
-        st.write("Top-level keys:", list(model.__dict__.keys()))
+bundle = load_bundle()
+
+# bundle içeriği
+alpha = float(bundle.get("alpha", 0.7))
+rf_pipe = bundle["rf_pipe"]
+cat_pipe = bundle["cat_pipe"]
+
+st.caption(f"Ensemble ağırlıkları: **{alpha:.2f} RF** + **{1-alpha:.2f} CatBoost**")
 
 
-# ============================================================
-# INPUTS (senin kolonlara göre)
-# ============================================================
+# =========================
+# PIPELINE KOLONLARI (varsa) - KONTROL
+# =========================
+def pipeline_expected_columns(pipe):
+    """
+    Eğer pipeline bir ColumnTransformer veya benzeri bir şey kullanıyorsa,
+    beklenen kolonları buradan yakalamaya çalışır.
+    Bulamazsa None döner.
+    """
+    # sklearn pipeline: named_steps olabilir
+    steps = getattr(pipe, "named_steps", None)
+    if not steps:
+        return None
+
+    # en sık: "preprocessor" adında adım olur
+    for k in ["preprocessor", "prep", "ct", "column_transformer"]:
+        if k in steps:
+            pre = steps[k]
+            # ColumnTransformer içindeki feature isimleri bazen saklı olur
+            for attr in ["feature_names_in_", "feature_names_in"]:
+                if hasattr(pre, attr):
+                    return list(getattr(pre, attr))
+            # pipeline'ın en üstü bazen feature_names_in_ tutar
+    for attr in ["feature_names_in_", "feature_names_in"]:
+        if hasattr(pipe, attr):
+            return list(getattr(pipe, attr))
+
+    return None
+
+exp_cols_rf = pipeline_expected_columns(rf_pipe)
+exp_cols_cat = pipeline_expected_columns(cat_pipe)
+
+with st.expander("🧠 Debug (pipeline beklenen kolonlar)", expanded=False):
+    st.write("RF pipe type:", type(rf_pipe))
+    st.write("Cat pipe type:", type(cat_pipe))
+    st.write("RF expected columns:", exp_cols_rf if exp_cols_rf else "Bulunamadı (normal olabilir)")
+    st.write("Cat expected columns:", exp_cols_cat if exp_cols_cat else "Bulunamadı (normal olabilir)")
+
+
+# =========================
+# INPUTLAR (senin kolonlarına göre)
+# =========================
+# (Listeleri boş bırakırsan text_input olur)
 STATIONS = []
 DISTRICTS = []
 DISTRICT_NORMS = []
 
-def select_or_text(label: str, options: list[str]) -> str:
-    return st.selectbox(label, options) if options else st.text_input(label, value="")
+def select_or_text(label: str, options: list[str], default=""):
+    if options:
+        return st.selectbox(label, options)
+    return st.text_input(label, value=default)
 
 with st.sidebar:
     st.header("🧩 Temel Bilgiler")
     station_name = select_or_text("station_name", STATIONS)
-
     d = st.date_input("date", value=dt_date(2024, 12, 1))
     date_str = d.strftime("%Y-%m-%d")
-
     district_name = select_or_text("district_name", DISTRICTS)
     district_norm = select_or_text("district_norm", DISTRICT_NORMS)
 
@@ -217,42 +159,55 @@ with c3:
     is_extreme_day = int(st.checkbox("is_extreme_day", value=False))
     is_outlier = st.checkbox("is_outlier", value=False)
 
+# modele giden veri
 X = pd.DataFrame([{
     "station_name": station_name,
     "date": date_str,
+
     "Hafta Sonu": Hafta_Sonu,
     "Tatiller": Tatiller,
     "Okul Günleri": Okul_Gunleri,
+
     "passage_cnt": float(passage_cnt),
+
     "rain_mm": float(rain_mm),
     "precip_mm": float(precip_mm),
     "snowfall_cm": float(snowfall_cm),
     "et0_mm": float(et0_mm),
+
     "tmax_c": float(tmax_c),
     "tmin_c": float(tmin_c),
     "tmean_c": float(tmean_c),
+
     "tapp_max_c": float(tapp_max_c),
     "tapp_min_c": float(tapp_min_c),
     "tapp_mean_c": float(tapp_mean_c),
+
     "wind10m_mean_kmh": float(wind10m_mean_kmh),
     "cloud_cover_mean_pct": float(cloud_cover_mean_pct),
+
     "sunshine_sec": float(sunshine_sec),
     "sunshine_hour": float(sunshine_hour),
     "snow_depth_cm": float(snow_depth_cm),
+
     "year": int(year),
     "month": int(month),
     "day": int(day),
     "weekday_num": int(weekday_num),
     "weekofyear": int(weekofyear),
     "quarter": int(quarter),
+
     "is_weekday": int(is_weekday),
     "is_weekend": int(is_weekend),
     "is_holiday": int(is_holiday),
     "is_school_day": int(is_school_day),
+
     "is_outlier": bool(is_outlier),
     "is_extreme_day": int(is_extreme_day),
+
     "is_official_holiday": int(is_official_holiday),
     "is_religious_holiday": int(is_religious_holiday),
+
     "district_name": district_name,
     "district_norm": district_norm,
 }])
@@ -261,12 +216,57 @@ st.divider()
 st.subheader("🔎 Modele giden veri (kontrol)")
 st.dataframe(X, use_container_width=True)
 
+
+# =========================
+# KOLON UYUMLULUK KONTROLÜ
+# =========================
+def show_column_mismatch(expected_cols, X_cols, title):
+    exp_set = set(expected_cols)
+    x_set = set(X_cols)
+    missing = sorted(list(exp_set - x_set))
+    extra = sorted(list(x_set - exp_set))
+
+    if not missing and not extra:
+        st.success(f"✅ {title}: Kolonlar uyumlu.")
+        return True
+
+    st.warning(f"⚠️ {title}: Kolon uyuşmazlığı var.")
+    if missing:
+        st.write("Eksik kolonlar:", missing)
+    if extra:
+        st.write("Fazla kolonlar:", extra)
+    return False
+
+
+# =========================
+# TAHMİN
+# =========================
 if st.button("Tahmin Et", use_container_width=True):
     try:
-        y_pred = model.predict(X)
-        y0 = float(np.asarray(y_pred).reshape(-1)[0])
+        # Eğer pipeline expected kolonları bulabildiysek uyumluluğu kontrol et
+        if exp_cols_rf:
+            ok_rf = show_column_mismatch(exp_cols_rf, list(X.columns), "RF Pipeline")
+            if not ok_rf:
+                st.stop()
+
+        if exp_cols_cat:
+            ok_cat = show_column_mismatch(exp_cols_cat, list(X.columns), "CatBoost Pipeline")
+            if not ok_cat:
+                st.stop()
+
+        y_rf = np.asarray(rf_pipe.predict(X)).reshape(-1)
+        y_cat = np.asarray(cat_pipe.predict(X)).reshape(-1)
+
+        y_pred = alpha * y_rf + (1 - alpha) * y_cat
+        y0 = float(y_pred[0])
+
         st.success(f"✅ Tahmin (target_day): {y0:.4f}")
-        st.caption(f"Ensemble ağırlığı: {ALPHA:.1f} RF + {1-ALPHA:.1f} CatBoost")
+        st.caption(f"Ensemble: {alpha:.2f}*RF + {1-alpha:.2f}*CatBoost")
+
+        with st.expander("📌 Model çıktı detayları", expanded=False):
+            st.write("RF tahmin:", float(y_rf[0]))
+            st.write("CatBoost tahmin:", float(y_cat[0]))
+
     except Exception as e:
         st.error("❌ Tahmin sırasında hata oluştu.")
         st.exception(e)
