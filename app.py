@@ -6,20 +6,20 @@ import numpy as np
 from datetime import date as dt_date
 
 # =========================
-# AYARLAR
+# SAYFA AYARLARI
 # =========================
 st.set_page_config(page_title="RF + CatBoost Ensemble Tahmin", layout="wide")
 st.title("🚇 RF + CatBoost Ensemble Tahmin (Bundle)")
 
+# =========================
+# BUNDLE YÜKLEME
+# =========================
 BUNDLE_PATH = "bundle_rf_catboost.joblib"
 
 @st.cache_resource
 def load_bundle(path: str):
     return joblib.load(path)
 
-# =========================
-# DOSYA KONTROL
-# =========================
 with st.expander("🔧 Debug", expanded=False):
     st.write("Working dir:", os.getcwd())
     st.write("Files:", os.listdir("."))
@@ -36,7 +36,6 @@ if not os.path.exists(BUNDLE_PATH):
 
 bundle = load_bundle(BUNDLE_PATH)
 
-# bundle içeriği
 alpha = float(bundle.get("alpha", 0.7))
 rf_pipe = bundle["rf_pipe"]
 cat_pipe = bundle["cat_pipe"]
@@ -50,7 +49,7 @@ with st.expander("🧠 Debug (bundle anahtarları)", expanded=False):
     st.write("Alpha:", alpha)
 
 # =========================
-# INPUTLAR (kolon listene göre)
+# INPUTLAR
 # =========================
 STATIONS = []
 DISTRICTS = []
@@ -105,7 +104,7 @@ with c2:
     cloud_cover_mean_pct = st.number_input("cloud_cover_mean_pct", value=50.0, step=0.1)
 
     sunshine_sec = st.number_input("sunshine_sec", value=0.0, step=1.0)
-    sunshine_hour = st.number_input("sunshine_hour", value=0.0, step=0.1)
+    sunshine_hours = st.number_input("sunshine_hours", value=0.0, step=0.1)
 
 with c3:
     st.subheader("🧠 Zaman Özellikleri + Diğerleri")
@@ -122,6 +121,9 @@ with c3:
     is_extreme_day = int(st.checkbox("is_extreme_day", value=False))
     is_outlier = st.checkbox("is_outlier", value=False)
 
+# =========================
+# DATAFRAME (MODELE GİDEN X)
+# =========================
 X = pd.DataFrame([{
     "station_name": station_name,
     "date": date_str,
@@ -149,7 +151,7 @@ X = pd.DataFrame([{
     "cloud_cover_mean_pct": float(cloud_cover_mean_pct),
 
     "sunshine_sec": float(sunshine_sec),
-    "sunshine_hour": float(sunshine_hour),
+    "sunshine_hours": float(sunshine_hours),
 
     "snow_depth_cm": float(snow_depth_cm),
 
@@ -174,6 +176,10 @@ X = pd.DataFrame([{
     "district_name": district_name,
     "district_norm": district_norm,
 }])
+
+# Güvenlik: eski isimden gelirse otomatik tamamla
+if "sunshine_hours" not in X.columns and "sunshine_hour" in X.columns:
+    X["sunshine_hours"] = X["sunshine_hour"]
 
 st.subheader("🔎 Modele giden veri (kontrol)")
 st.dataframe(X, use_container_width=True)
